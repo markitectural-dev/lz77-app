@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LZ77 — Сжатие и распаковка</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Алгоритм LZ77</h1>
+            <p class="subtitle">Сжатие и распаковка данных методом скользящего окна</p>
+        </header>
+
+        <section class="input-section">
+            <div class="input-group">
+                <label for="input-text">Входная строка</label>
+                <textarea id="input-text" rows="3" placeholder="Введите текст для сжатия...">aabaabaab</textarea>
+            </div>
+            <div class="params">
+                <div class="param">
+                    <label for="window-size">Буфер поиска (W)</label>
+                    <input type="number" id="window-size" value="32" min="1" max="256">
+                </div>
+                <div class="param">
+                    <label for="lookahead-size">Буфер предпросмотра (L)</label>
+                    <input type="number" id="lookahead-size" value="16" min="1" max="128">
+                </div>
+            </div>
+            <div class="buttons">
+                <button id="btn-encode" onclick="encode()">Сжать</button>
+                <button id="btn-clear" onclick="clearAll()" class="outline">Очистить</button>
+            </div>
+        </section>
+
+        <section id="results" class="results" style="display:none;">
+            <div class="stats">
+                <div class="stat">
+                    <span class="stat-label">Исходный размер</span>
+                    <span class="stat-value" id="stat-original">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Кол-во троек</span>
+                    <span class="stat-value" id="stat-triples">—</span>
+                </div>
+            </div>
+
+            <div class="triples-display">
+                <h3>Закодированная последовательность</h3>
+                <div id="triples-list" class="triples-list"></div>
+            </div>
+
+            <div class="steps-section">
+                <h3>Пошаговая трассировка кодирования</h3>
+                <table id="encode-table">
+                    <thead>
+                        <tr>
+                            <th>Шаг</th>
+                            <th>Поз.</th>
+                            <th>Буфер поиска</th>
+                            <th>Буфер предпросмотра</th>
+                            <th>Совпадение</th>
+                            <th>Тройка</th>
+                        </tr>
+                    </thead>
+                    <tbody id="encode-tbody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="input-section" id="decode-section">
+            <div class="input-group">
+                <label for="triples-input">Тройки для распаковки</label>
+                <textarea id="triples-input" rows="3" placeholder="Заполняется автоматически после сжатия или введите вручную"></textarea>
+                <p class="hint">Формат: <span class="code-token">(d,k,символ)</span> без пробелов между тройками. Пробел как символ: <span class="code-token">(3,1,␣)</span></p>
+            </div>
+            <div class="buttons">
+                <button id="btn-decode" onclick="decodeFromInput()" class="secondary">Распаковать</button>
+            </div>
+        </section>
+
+        <section id="decode-results" class="results" style="display:none;">
+            <h3>Пошаговая трассировка декодирования</h3>
+            <table id="decode-table">
+                <thead>
+                    <tr>
+                        <th>Шаг</th>
+                        <th>Тройка</th>
+                        <th>Скопировано</th>
+                        <th>Символ</th>
+                        <th>Результат</th>
+                    </tr>
+                </thead>
+                <tbody id="decode-tbody"></tbody>
+            </table>
+            <div class="decoded-result">
+                <span class="stat-label">Восстановленная строка:</span>
+                <span id="decoded-string" class="decoded-string"></span>
+            </div>
+        </section>
+    </div>
+
+<script>
+function esc(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+
+function tok(str) {
+    const escaped = esc(str);
+    const visible = escaped.replace(/ /g, '<span style="color:var(--accent);opacity:0.5">␣</span>');
+    return '<span class="code-token">' + visible + '</span>';
+}
+
+function triplesToString(triples) {
+    return triples.map(t => '(' + t.d + ',' + t.k + ',' + t.c + ')').join('');
+}
+
+function parseTriples(str) {
+    const result = [];
+    const re = /\((\d+),(\d+),(.)\)/g;
+    let m;
+    while ((m = re.exec(str)) !== null) {
+        result.push({d: parseInt(m[1]), k: parseInt(m[2]), c: m[3]});
+    }
+    return result;
+}
+
+async function encode() {
+    const text = document.getElementById('input-text').value;
+    const W = document.getElementById('window-size').value;
+    const L = document.getElementById('lookahead-size').value;
+    if (!text) { alert('Введите строку'); return; }
+
+    const res = await fetch('/encode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text, window_size: W, lookahead_size: L})
+    });
+    if (!res.ok) { const e = await res.json(); alert(e.error); return; }
+    const data = await res.json();
+
+    const triples = data.steps.map(s => ({d: s.d, k: s.k, c: s.c}));
+    document.getElementById('triples-input').value = triplesToString(triples);
+
+    document.getElementById('stat-original').textContent = data.original_length + ' симв.';
+    document.getElementById('stat-triples').textContent = data.encoded_count;
+
+    document.getElementById('triples-list').innerHTML = data.triples.map(t =>
+        '<span class="triple-badge">' + esc(t) + '</span>'
+    ).join('');
+
+    document.getElementById('encode-tbody').innerHTML = data.steps.map(s => `
+        <tr>
+            <td>${s.step}</td>
+            <td>${s.position}</td>
+            <td>${tok(s.search_buffer)}</td>
+            <td>${tok(s.lookahead_buffer)}</td>
+            <td class="mono">${esc(s.match)}</td>
+            <td class="mono triple-cell">${esc(s.triple)}</td>
+        </tr>
+    `).join('');
+
+    document.getElementById('results').style.display = 'block';
+    document.getElementById('decode-results').style.display = 'none';
+    document.getElementById('results').scrollIntoView({behavior: 'smooth'});
+}
+
+async function decodeFromInput() {
+    const raw = document.getElementById('triples-input').value.trim();
+    if (!raw) { alert('Введите тройки для распаковки'); return; }
+
+    const triples = parseTriples(raw);
+    if (triples.length === 0) { alert('Не удалось разобрать тройки. Формат: (d,k,символ)'); return; }
+
+    const res = await fetch('/decode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({triples})
+    });
+    const data = await res.json();
+
+    document.getElementById('decode-tbody').innerHTML = data.steps.map(s => `
+        <tr>
+            <td>${s.step}</td>
+            <td class="mono triple-cell">${esc(s.triple)}</td>
+            <td>${tok(s.copied)}</td>
+            <td>${tok(s.added_char)}</td>
+            <td>${tok(s.result_so_far)}</td>
+        </tr>
+    `).join('');
+
+    document.getElementById('decoded-string').innerHTML = tok(data.decoded);
+    document.getElementById('decode-results').style.display = 'block';
+    document.getElementById('decode-results').scrollIntoView({behavior: 'smooth'});
+}
+
+function clearAll() {
+    document.getElementById('input-text').value = '';
+    document.getElementById('triples-input').value = '';
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('decode-results').style.display = 'none';
+}
+</script>
+</body>
+</html>
